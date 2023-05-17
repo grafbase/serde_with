@@ -279,9 +279,19 @@ fn minify_name(
     } else {
         let minified_field_name = existing_name
             .chars()
-            .map(|c| c.to_ascii_lowercase())
-            .flat_map(|c| [c, c.to_ascii_uppercase()])
-            .map(|c| c.to_string())
+            .flat_map(|c| {
+                let flipped_case = if c.is_ascii_lowercase() {
+                    c.to_ascii_uppercase()
+                } else {
+                    c.to_ascii_lowercase()
+                };
+                [
+                    c.to_string(),
+                    flipped_case.to_string(),
+                    format!("{c}_"),
+                    format!("_{c}"),
+                ]
+            })
             .find(|possible_minified_field_name| {
                 used_field_names.insert(possible_minified_field_name.clone())
             })
