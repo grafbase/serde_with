@@ -17,7 +17,7 @@ fn test_minify_variant_names() {
     let result = serde_json::to_value(&input).unwrap();
     assert_eq!(
         json!({
-            "l": { "field_name": 1 }
+            "L": { "field_name": 1 }
         }),
         result
     );
@@ -27,7 +27,7 @@ fn test_minify_variant_names() {
     let result = serde_json::to_value(&input).unwrap();
     assert_eq!(
         json!({
-            "a": { "field_name": 1 }
+            "A": { "field_name": 1 }
         }),
         result
     );
@@ -37,7 +37,7 @@ fn test_minify_variant_names() {
     let result = serde_json::to_value(&input).unwrap();
     assert_eq!(
         json!({
-            "A": { "field_name": 1 }
+            "a": { "field_name": 1 }
         }),
         result
     );
