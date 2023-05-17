@@ -62,9 +62,29 @@ use syn::{
     parse_macro_input, parse_quote,
     punctuated::{Pair, Punctuated},
     spanned::Spanned,
-    DeriveInput, Error, ExprLit, Field, Fields, GenericArgument, ItemEnum, ItemStruct, Meta, Path,
-    PathArguments, ReturnType, Token, Type,
+    Attribute, DeriveInput, Error, ExprLit, Field, Fields, GenericArgument, ItemEnum, ItemStruct,
+    Meta, Path, PathArguments, ReturnType, Token, Type, Variant,
 };
+
+/// Apply function on every variant of the enum
+fn apply_function_to_variants<F>(input: TokenStream, mut function: F) -> Result<TokenStream2, Error>
+where
+    F: FnMut(&mut Variant) -> Result<(), String>,
+{
+    if let Ok(mut input) = syn::parse::<ItemEnum>(input) {
+        input
+            .variants
+            .iter_mut()
+            .map(|variant| function(variant).map_err(|err| Error::new(variant.span(), err)))
+            .collect_error()?;
+        Ok(quote!(#input))
+    } else {
+        Err(Error::new(
+            Span::call_site(),
+            "The attribute can only be applied to enum definitions.",
+        ))
+    }
+}
 
 /// Apply function on every field of structs or enums
 fn apply_function_to_struct_and_enum_fields<F>(
@@ -92,8 +112,6 @@ where
         }
     };
 
-    // For each field in the struct given by `input`, add the `skip_serializing_if` attribute,
-    // if and only if, it is of type `Option`
     if let Ok(mut input) = syn::parse::<ItemStruct>(input.clone()) {
         apply_on_fields(&mut input.fields)?;
         Ok(quote!(#input))
@@ -225,11 +243,12 @@ where
 
 /// Minify all field names in a struct or enum variant consistently.
 #[proc_macro_attribute]
-pub fn minify_field_names(_args: TokenStream, input: TokenStream) -> TokenStream {
+pub fn minify_variant_names(_args: TokenStream, input: TokenStream) -> TokenStream {
     let mut used_field_names = HashSet::new();
 
-    let res = match apply_function_to_struct_and_enum_fields(input, |field| {
-        minify_field_name(&mut used_field_names, field)
+    let res = match apply_function_to_variants(input, |variant| {
+        let existing_name = variant.ident.to_string();
+        minify_name(&mut variant.attrs, &existing_name, &mut used_field_names)
     }) {
         Ok(res) => res,
         Err(err) => err.to_compile_error(),
@@ -237,12 +256,27 @@ pub fn minify_field_names(_args: TokenStream, input: TokenStream) -> TokenStream
     TokenStream::from(res)
 }
 
-/// Minify the field name.
-fn minify_field_name(
+/// Minify all field names in a struct or enum variant consistently.
+#[proc_macro_attribute]
+pub fn minify_field_names(_args: TokenStream, input: TokenStream) -> TokenStream {
+    let mut used_field_names = HashSet::new();
+
+    let res = match apply_function_to_struct_and_enum_fields(input, |field| {
+        let existing_name = field.ident.as_ref().expect("must have a name").to_string();
+        minify_name(&mut field.attrs, &existing_name, &mut used_field_names)
+    }) {
+        Ok(res) => res,
+        Err(err) => err.to_compile_error(),
+    };
+    TokenStream::from(res)
+}
+
+fn minify_name(
+    attrs: &mut Vec<Attribute>,
+    existing_name: &str,
     used_field_names: &mut HashSet<String>,
-    field: &mut Field,
 ) -> Result<(), String> {
-    if let Some(rename_literal) = field_get_attribute_value(field, "serde", "rename") {
+    if let Some(rename_literal) = get_attribute_value(attrs, "serde", "rename") {
         let rename_key = match rename_literal.lit {
             syn::Lit::Str(string) => string.value(),
             _ => {
@@ -256,7 +290,6 @@ fn minify_field_name(
         }
         used_field_names.insert(rename_key);
     } else {
-        let existing_name = field.ident.as_ref().expect("must have a name").to_string();
         let minified_field_name = existing_name
             .chars()
             .map(|c| c.to_ascii_lowercase())
@@ -264,17 +297,13 @@ fn minify_field_name(
             .map(|c| c.to_string())
             .find(|possible_minified_field_name| {
                 used_field_names.insert(possible_minified_field_name.clone())
-            });
-        let Some(minified_field_name) = minified_field_name else {
-            return Err(format!(
-                "Could not find a free rename key for field '{existing_name}'"
-            ));
-        };
+            })
+            .ok_or_else(|| format!("Could not find a free rename key for '{existing_name}'"))?;
+
         let minified_field_name = quote!(#minified_field_name);
         let attr = parse_quote!(#[serde(rename = #minified_field_name)]);
-        field.attrs.push(attr);
-    };
-
+        attrs.push(attr);
+    }
     Ok(())
 }
 
@@ -464,8 +493,8 @@ fn is_std_option(type_: &Type) -> bool {
 }
 
 /// Return the value of the attribute `name` under namespace `namespace` in the field `field`
-fn field_get_attribute_value(field: &Field, namespace: &str, name: &str) -> Option<ExprLit> {
-    for attr in &field.attrs {
+fn get_attribute_value(attributes: &[Attribute], namespace: &str, name: &str) -> Option<ExprLit> {
+    for attr in attributes {
         if attr.path().is_ident(namespace) {
             // Ignore non parsable attributes, as these are not important for us
             if let Meta::List(expr) = &attr.meta {
