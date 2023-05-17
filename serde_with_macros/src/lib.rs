@@ -56,29 +56,26 @@ use darling::{
 use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::quote;
+use std::collections::HashSet;
 use syn::{
     parse::Parser,
     parse_macro_input, parse_quote,
     punctuated::{Pair, Punctuated},
     spanned::Spanned,
-    DeriveInput, Error, Field, Fields, GenericArgument, ItemEnum, ItemStruct, Meta, Path,
+    DeriveInput, Error, ExprLit, Field, Fields, GenericArgument, ItemEnum, ItemStruct, Meta, Path,
     PathArguments, ReturnType, Token, Type,
 };
 
 /// Apply function on every field of structs or enums
 fn apply_function_to_struct_and_enum_fields<F>(
     input: TokenStream,
-    function: F,
+    mut function: F,
 ) -> Result<TokenStream2, Error>
 where
-    F: Copy,
-    F: Fn(&mut Field) -> Result<(), String>,
+    F: FnMut(&mut Field) -> Result<(), String>,
 {
-    /// Handle a single struct or a single enum variant
-    fn apply_on_fields<F>(fields: &mut Fields, function: F) -> Result<(), Error>
-    where
-        F: Fn(&mut Field) -> Result<(), String>,
-    {
+    // Handle a single struct or a single enum variant
+    let mut apply_on_fields = |fields: &mut Fields| {
         match fields {
             // simple, no fields, do nothing
             Fields::Unit => Ok(()),
@@ -93,18 +90,18 @@ where
                 .map(|field| function(field).map_err(|err| Error::new(field.span(), err)))
                 .collect_error(),
         }
-    }
+    };
 
     // For each field in the struct given by `input`, add the `skip_serializing_if` attribute,
     // if and only if, it is of type `Option`
     if let Ok(mut input) = syn::parse::<ItemStruct>(input.clone()) {
-        apply_on_fields(&mut input.fields, function)?;
+        apply_on_fields(&mut input.fields)?;
         Ok(quote!(#input))
     } else if let Ok(mut input) = syn::parse::<ItemEnum>(input) {
         input
             .variants
             .iter_mut()
-            .map(|variant| apply_on_fields(&mut variant.fields, function))
+            .map(|variant| apply_on_fields(&mut variant.fields))
             .collect_error()?;
         Ok(quote!(#input))
     } else {
@@ -175,8 +172,6 @@ where
         #[derive(#serde_with_crate_path::__private_consume_serde_as_attributes)]
     );
 
-    // For each field in the struct given by `input`, add the `skip_serializing_if` attribute,
-    // if and only if, it is of type `Option`
     if let Ok(mut input) = syn::parse::<ItemStruct>(input.clone()) {
         apply_on_fields(&mut input.fields, function)?;
         input.attrs.push(consume_serde_as_attribute);
@@ -226,6 +221,61 @@ where
         )
         .with_span(&Span::call_site()))
     }
+}
+
+/// Minify all field names in a struct or enum variant consistently.
+#[proc_macro_attribute]
+pub fn minify_field_names(_args: TokenStream, input: TokenStream) -> TokenStream {
+    let mut used_field_names = HashSet::new();
+
+    let res = match apply_function_to_struct_and_enum_fields(input, |field| {
+        minify_field_name(&mut used_field_names, field)
+    }) {
+        Ok(res) => res,
+        Err(err) => err.to_compile_error(),
+    };
+    TokenStream::from(res)
+}
+
+/// Minify the field name.
+fn minify_field_name(
+    used_field_names: &mut HashSet<String>,
+    field: &mut Field,
+) -> Result<(), String> {
+    if let Some(rename_literal) = field_get_attribute_value(field, "serde", "rename") {
+        let rename_key = match rename_literal.lit {
+            syn::Lit::Str(string) => string.value(),
+            _ => {
+                return Err(
+                    "The value of the `serde(rename = …)` attribute must be a string".to_owned(),
+                )
+            }
+        };
+        if used_field_names.contains(&rename_key) {
+            return Err(format!("The key '{rename_key}' was previously used"));
+        }
+        used_field_names.insert(rename_key);
+    } else {
+        let existing_name = field.ident.as_ref().expect("must have a name").to_string();
+        let minified_field_name = existing_name
+            .chars()
+            .map(|c| c.to_ascii_lowercase())
+            .flat_map(|c| [c, c.to_ascii_uppercase()])
+            .map(|c| c.to_string())
+            .find(|possible_minified_field_name| {
+                used_field_names.insert(possible_minified_field_name.clone())
+            });
+        let Some(minified_field_name) = minified_field_name else {
+            return Err(format!(
+                "Could not find a free rename key for field '{existing_name}'"
+            ));
+        };
+        let minified_field_name = quote!(#minified_field_name);
+        let attr = parse_quote!(#[serde(rename = #minified_field_name)]);
+        field.attrs.push(attr);
+    };
+
+    Ok(())
 }
 
 /// Add `skip_serializing_if` annotations to [`Option`] fields.
@@ -411,6 +461,39 @@ fn is_std_option(type_: &Type) -> bool {
         }
         _ => false,
     }
+}
+
+/// Return the value of the attribute `name` under namespace `namespace` in the field `field`
+fn field_get_attribute_value(field: &Field, namespace: &str, name: &str) -> Option<ExprLit> {
+    for attr in &field.attrs {
+        if attr.path().is_ident(namespace) {
+            // Ignore non parsable attributes, as these are not important for us
+            if let Meta::List(expr) = &attr.meta {
+                let nested = match Punctuated::<Meta, Token![,]>::parse_terminated
+                    .parse2(expr.tokens.clone())
+                {
+                    Ok(nested) => nested,
+                    Err(_) => continue,
+                };
+                for expr in nested {
+                    match expr {
+                        Meta::NameValue(expr) => {
+                            if let Some(ident) = expr.path.get_ident() {
+                                if *ident == name {
+                                    return match expr.value {
+                                        syn::Expr::Lit(expr_literal) => Some(expr_literal),
+                                        _ => None,
+                                    };
+                                }
+                            }
+                        }
+                        _ => (),
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Determine if the `field` has an attribute with given `namespace` and `name`
