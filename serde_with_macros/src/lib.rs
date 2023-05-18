@@ -290,8 +290,9 @@ fn minify_name(
         }
         used_field_names.insert(rename_key);
     } else {
-        let minified_field_name = existing_name
+        let minified_name = existing_name
             .chars()
+            .filter(|c| c.is_alphabetic())
             .flat_map(|c| {
                 let flipped_case = if c.is_ascii_lowercase() {
                     c.to_ascii_uppercase()
@@ -310,8 +311,9 @@ fn minify_name(
             })
             .ok_or_else(|| format!("Could not find a free rename key for '{existing_name}'"))?;
 
-        let minified_field_name = quote!(#minified_field_name);
-        let attr = parse_quote!(#[serde(rename = #minified_field_name)]);
+        let minified_name = quote!(#minified_name);
+        let existing_name = quote!(#existing_name);
+        let attr = parse_quote!(#[serde(rename = #minified_name, alias = #existing_name)]);
         attrs.push(attr);
     }
     Ok(())
