@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use serde_with_macros::minify_variant_names;
 
-#[minify_variant_names]
+#[minify_variant_names(serialize = "minified", deserialize = "minified")]
 #[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]
 enum EnumWithLongVariantNames {
     LongVariantName { field_name: usize },

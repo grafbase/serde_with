@@ -228,14 +228,59 @@ where
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, FromMeta)]
+#[darling(rename_all = "lowercase")]
+enum SerializeStrategy {
+    Minified,
+    #[default]
+    Intact,
+}
+
+#[derive(Clone, Copy, Debug, Default, FromMeta, PartialEq)]
+#[darling(rename_all = "lowercase")]
+enum DeserializeStrategy {
+    Minified,
+    Both,
+    #[default]
+    Intact,
+}
+
+#[derive(Debug, FromMeta)]
+struct Arguments {
+    #[darling(default)]
+    serialize: SerializeStrategy,
+    #[darling(default)]
+    deserialize: DeserializeStrategy,
+}
+
+fn extract_strategies(
+    args: TokenStream,
+) -> Result<(SerializeStrategy, DeserializeStrategy), Error> {
+    let Arguments {
+        serialize,
+        deserialize,
+    } = Arguments::from_list(&NestedMeta::parse_meta_list(args.into())?)?;
+    Ok((serialize, deserialize))
+}
+
 /// Minify all field names in a struct or enum variant consistently.
 #[proc_macro_attribute]
-pub fn minify_variant_names(_args: TokenStream, input: TokenStream) -> TokenStream {
+pub fn minify_variant_names(args: TokenStream, input: TokenStream) -> TokenStream {
+    let (serialize_strategy, deserialize_strategy) = match extract_strategies(args) {
+        Ok(strategies) => strategies,
+        Err(err) => return err.to_compile_error().into(),
+    };
     let mut used_field_names = HashSet::new();
 
     let res = match apply_function_to_variants(input, |variant| {
         let existing_name = variant.ident.to_string();
-        minify_name(&mut variant.attrs, &existing_name, &mut used_field_names)
+        minify_name(
+            &mut variant.attrs,
+            &existing_name,
+            &mut used_field_names,
+            serialize_strategy,
+            deserialize_strategy,
+        )
     }) {
         Ok(res) => res,
         Err(err) => err.to_compile_error(),
@@ -245,12 +290,22 @@ pub fn minify_variant_names(_args: TokenStream, input: TokenStream) -> TokenStre
 
 /// Minify all field names in a struct or enum variant consistently.
 #[proc_macro_attribute]
-pub fn minify_field_names(_args: TokenStream, input: TokenStream) -> TokenStream {
+pub fn minify_field_names(args: TokenStream, input: TokenStream) -> TokenStream {
+    let (serialize_strategy, deserialize_strategy) = match extract_strategies(args) {
+        Ok(strategies) => strategies,
+        Err(err) => return err.to_compile_error().into(),
+    };
     let mut used_field_names = HashSet::new();
 
     let res = match apply_function_to_struct_and_enum_fields(input, |field| {
         let existing_name = field.ident.as_ref().expect("must have a name").to_string();
-        minify_name(&mut field.attrs, &existing_name, &mut used_field_names)
+        minify_name(
+            &mut field.attrs,
+            &existing_name,
+            &mut used_field_names,
+            serialize_strategy,
+            deserialize_strategy,
+        )
     }) {
         Ok(res) => res,
         Err(err) => err.to_compile_error(),
@@ -262,6 +317,8 @@ fn minify_name(
     attrs: &mut Vec<Attribute>,
     existing_name: &str,
     used_field_names: &mut HashSet<String>,
+    serialize_strategy: SerializeStrategy,
+    deserialize_strategy: DeserializeStrategy,
 ) -> Result<(), String> {
     if let Some(rename_literal) = get_attribute_value(attrs, "serde", "rename") {
         let rename_key = match rename_literal.lit {
@@ -300,8 +357,25 @@ fn minify_name(
 
         let minified_name = quote!(#minified_name);
         let existing_name = quote!(#existing_name);
-        let attr = parse_quote!(#[serde(rename = #minified_name, alias = #existing_name)]);
-        attrs.push(attr);
+
+        attrs.push(match (serialize_strategy, deserialize_strategy) {
+            (SerializeStrategy::Minified, DeserializeStrategy::Intact) => {
+                parse_quote!(#[serde(rename(serialize = #minified_name, deserialize = #existing_name))])
+            }
+            (SerializeStrategy::Minified, _) => {
+                parse_quote!(#[serde(rename = #minified_name)])
+            }
+            (SerializeStrategy::Intact, DeserializeStrategy::Intact) => {
+                parse_quote!(#[serde(rename = #existing_name)])
+            }
+            (SerializeStrategy::Intact, _) => {
+                parse_quote!(#[serde(rename(serialize = #existing_name, deserialize = #minified_name))])
+            }
+        });
+
+        if deserialize_strategy == DeserializeStrategy::Both {
+            attrs.push(parse_quote!(#[serde(alias = #existing_name)]));
+        }
     }
     Ok(())
 }
