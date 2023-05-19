@@ -33,7 +33,9 @@ proc-macro = true
 maintenance = {status = "actively-developed"}
 
 [features]
+default = []
 schemars_0_8 = []
+skip_serializing_defaults = []
 
 [dependencies]
 darling = "0.20.0"

@@ -2572,3 +2572,7 @@ pub struct SetLastValueWins<T>(PhantomData<T>);
 /// [`JsonSchema`]: ::schemars_0_8::JsonSchema
 #[cfg(feature = "schemars_0_8")]
 pub struct Schema<T: ?Sized, TA>(PhantomData<T>, PhantomData<TA>);
+
+pub fn is_default_value<T: Default + PartialEq>(value: &T) -> bool {
+    value == &T::default()
+}
