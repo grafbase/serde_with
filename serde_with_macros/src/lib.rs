@@ -32,8 +32,10 @@
 //! [`serde_with`]: https://crates.io/crates/serde_with/
 
 mod apply;
+mod skip_serializing_defaults;
 mod utils;
 
+use self::skip_serializing_defaults::skip_serializing_defaults_add_attr_to_field;
 use crate::utils::{split_with_de_lifetime, DeriveOptions, IteratorExt as _, SchemaFieldConfig};
 use darling::{
     ast::NestedMeta,
@@ -378,6 +380,33 @@ fn minify_name(
         }
     }
     Ok(())
+}
+
+#[cfg(feature = "skip_serializing_defaults")]
+#[proc_macro_attribute]
+pub fn skip_serializing_defaults(args: TokenStream, input: TokenStream) -> TokenStream {
+    let parsed = match NestedMeta::parse_meta_list(args.into()) {
+        Ok(res) => res,
+        Err(err) => return err.to_compile_error().into(),
+    };
+
+    let supported_types: Vec<_> = parsed
+        .into_iter()
+        .flat_map(|nested_meta| match nested_meta {
+            NestedMeta::Meta(Meta::Path(path)) => Some(path.segments[0].ident.to_string()),
+            _ => None,
+        })
+        .collect();
+
+    // For each field in the struct given by `input`, add the `skip_serializing_if` attribute,
+    // if and only if, it is of type `Option`, `Vec` or `bool`
+    let res = match apply_function_to_struct_and_enum_fields(input, |field| {
+        skip_serializing_defaults_add_attr_to_field(field, supported_types.as_slice())
+    }) {
+        Ok(res) => res,
+        Err(err) => err.to_compile_error(),
+    };
+    TokenStream::from(res)
 }
 
 /// Add `skip_serializing_if` annotations to [`Option`] fields.
