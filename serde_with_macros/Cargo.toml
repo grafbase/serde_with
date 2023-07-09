@@ -39,7 +39,7 @@ skip_serializing_defaults = []
 
 [dependencies]
 darling = "0.20.0"
-itertools = "0.10"
+itertools = "0.12"
 proc-macro2 = "1.0.1"
 quote = "1.0.0"
 strum = { version = "0.24", features = ["derive"] }
