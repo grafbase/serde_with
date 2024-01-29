@@ -42,7 +42,7 @@ darling = "0.20.0"
 itertools = "0.12"
 proc-macro2 = "1.0.1"
 quote = "1.0.0"
-strum = { version = "0.25", features = ["derive"] }
+strum = { version = "0.26", features = ["derive"] }
 
 [dependencies.syn]
 features = [
